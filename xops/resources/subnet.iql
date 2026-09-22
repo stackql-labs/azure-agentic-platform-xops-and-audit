@@ -1,0 +1,46 @@
+/*+ exists */
+SELECT COUNT(*) AS count FROM azure.network.subnets
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND virtual_network_name = '{{ vnet_name }}'
+AND name = '{{ subnet_name }}'
+
+/*+ create */
+INSERT INTO azure.network.subnets(
+   subnet_name,
+   virtual_network_name,
+   resource_group_name,
+   subscription_id,
+   properties
+)
+SELECT
+   '{{ subnet_name }}',
+   '{{ vnet_name }}',
+   '{{ resource_group_name }}',
+   '{{ subscription_id }}',
+   '{"addressPrefix": "{{ subnet_cidr }}"}'
+
+/*+ statecheck, retries=5, retry_delay=5 */
+SELECT COUNT(*) AS count FROM azure.network.subnets
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND virtual_network_name = '{{ vnet_name }}'
+AND name = '{{ subnet_name }}'
+AND provisioning_state = 'Succeeded'
+AND address_prefix = '{{ subnet_cidr }}'
+
+/*+ exports */
+SELECT '{{ subnet_name }}' AS subnet_name,
+       id AS subnet_id
+FROM azure.network.subnets
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND virtual_network_name = '{{ vnet_name }}'
+AND name = '{{ subnet_name }}'
+
+/*+ delete */
+DELETE FROM azure.network.subnets
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND virtual_network_name = '{{ vnet_name }}'
+AND subnet_name = '{{ subnet_name }}'

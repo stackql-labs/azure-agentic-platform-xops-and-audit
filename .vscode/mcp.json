@@ -1,0 +1,15 @@
+{
+  "servers": {
+    "stackql": {
+      "type": "stdio",
+      "command": "stackql",
+      "args": [
+        "mcp",
+        "--mcp.server.type=stdio",
+        "--approot", "${workspaceFolder}/.stackql",
+        "--env.file", "${workspaceFolder}/.env",
+        "--mcp.config", "{\"server\": {\"transport\": \"stdio\", \"mode\": \"safe\"}}"
+      ]
+    }
+  }
+}

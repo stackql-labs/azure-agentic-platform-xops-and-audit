@@ -1,0 +1,46 @@
+/*+ exists, postdelete_retries=24, postdelete_retry_delay=10 */
+SELECT COUNT(*) AS count FROM azure.compute.virtual_machines
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ vm_name }}'
+
+/*+ create */
+INSERT INTO azure.compute.virtual_machines(
+  resource_group_name,
+  subscription_id,
+  vm_name,
+  location,
+  properties,
+  tags
+)
+SELECT
+  '{{ resource_group_name }}',
+  '{{ subscription_id }}',
+  '{{ vm_name }}',
+  '{{ location }}',
+  '{"hardwareProfile": {"vmSize": "{{ vm_size }}"}, "storageProfile": {{ storageProfile }}, "osProfile": {{ osProfile }}, "networkProfile": {{ networkProfile }}}',
+  '{{ global_tags }}'
+
+/*+ statecheck, retries=18, retry_delay=10 */
+SELECT COUNT(*) AS count
+FROM azure.compute.virtual_machines
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ vm_name }}'
+AND provisioning_state = 'Succeeded'
+AND JSON_EXTRACT(hardware_profile, '$.vmSize') = '{{ vm_size }}'
+
+/*+ exports */
+SELECT '{{ vm_name }}' AS vm_name,
+       vm_id,
+       id AS vm_resource_id
+FROM azure.compute.virtual_machines
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ vm_name }}'
+
+/*+ delete, retries=3, retry_delay=10 */
+DELETE FROM azure.compute.virtual_machines
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND vm_name = '{{ vm_name }}'

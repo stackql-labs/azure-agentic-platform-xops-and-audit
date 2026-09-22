@@ -1,0 +1,18 @@
+# secrets and local state
+.env
+.stackql/
+*.log
+.stackql-deploy-exports
+
+# language environments
+node_modules/
+__pycache__/
+.venv/
+bin/
+obj/
+
+# demo output files
+demo/azure-provider/*.jsonl
+demo/azure-provider/*.csv
+demo/azure-provider/*.psv
+xops/*.json

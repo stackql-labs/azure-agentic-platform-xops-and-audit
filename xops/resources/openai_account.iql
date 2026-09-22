@@ -1,0 +1,49 @@
+/*+ exists */
+-- get by name: the accounts list endpoint returns an empty first page with a nextLink
+SELECT COUNT(*) AS count FROM azure.cognitive_services.accounts
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ openai_account_name }}'
+
+/*+ create */
+INSERT INTO azure.cognitive_services.accounts(
+  account_name,
+  resource_group_name,
+  subscription_id,
+  kind,
+  location,
+  sku,
+  properties,
+  tags
+)
+SELECT
+  '{{ openai_account_name }}',
+  '{{ resource_group_name }}',
+  '{{ subscription_id }}',
+  'OpenAI',
+  '{{ location }}',
+  '{"name": "S0"}',
+  '{"customSubDomainName": "{{ openai_account_name }}", "publicNetworkAccess": "Enabled"}',
+  '{{ global_tags }}'
+
+/*+ statecheck, retries=18, retry_delay=10 */
+SELECT COUNT(*) AS count FROM azure.cognitive_services.accounts
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ openai_account_name }}'
+AND kind = 'OpenAI'
+AND provisioning_state = 'Succeeded'
+
+/*+ exports */
+SELECT '{{ openai_account_name }}' AS openai_account_name,
+       endpoint AS openai_endpoint
+FROM azure.cognitive_services.accounts
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ openai_account_name }}'
+
+/*+ delete, retries=3, retry_delay=10 */
+DELETE FROM azure.cognitive_services.accounts
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ openai_account_name }}'

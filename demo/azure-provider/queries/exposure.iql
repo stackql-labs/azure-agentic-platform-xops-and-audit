@@ -1,0 +1,17 @@
+-- which nsg rules in the resource group let the internet in, on which ports
+WITH nsg AS (
+  SELECT name AS nsg, security_rules
+  FROM azure.network.network_security_groups
+  WHERE subscription_id = '{{ .subscription_id }}'
+  AND resource_group_name = '{{ .resource_group }}'
+)
+SELECT nsg,
+       JSON_EXTRACT(r.value, '$.name') AS rule,
+       JSON_EXTRACT(r.value, '$.properties.priority') AS priority,
+       JSON_EXTRACT(r.value, '$.properties.destinationPortRange') AS port,
+       JSON_EXTRACT(r.value, '$.properties.sourceAddressPrefix') AS source
+FROM nsg, json_each(nsg.security_rules) r
+WHERE JSON_EXTRACT(r.value, '$.properties.direction') = 'Inbound'
+AND JSON_EXTRACT(r.value, '$.properties.access') = 'Allow'
+AND JSON_EXTRACT(r.value, '$.properties.sourceAddressPrefix') IN ('*', '0.0.0.0/0', 'Internet')
+ORDER BY priority;

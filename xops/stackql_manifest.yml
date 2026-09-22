@@ -1,0 +1,328 @@
+# xops: one service's footprint on Azure with its edge in Cloudflare, as a
+# stackql-deploy stack. The same manifest and resource files build dev and prd
+# (per-environment values are the `values:` blocks below).
+#
+# Building blocks, in order:
+#   resource group -> vnet -> subnet -> nsg -> public ip -> nic
+#   -> vm (Ubuntu 24.04, python http.server on 80 as a systemd unit)
+#   -> custom script extension (writes the page and the unit)
+#   -> storage account (secure defaults) -> log analytics workspace
+#   -> orphan disk + orphan public ip (planted FinOps findings, purpose=finops-seed)
+#   -> azure openai account + gpt-5-mini deployment (the agents' model)
+#   -> cloudflare A record host.domain -> vm public ip
+#   -> conformance (one row over both planes, exported as footprint_ok)
+#
+# The nsg is asserted on every build (createorupdate): drift in its rules is
+# put back. The storage account has an update anchor: drift in its security
+# settings is patched back. Everything else is exists -> statecheck -> create,
+# so a build against a converged stack is reads only.
+#
+# Needs in .env: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET and
+# CLOUDFLARE_API_TOKEN (provider auth, exported into the process environment),
+# plus the stack variables AZURE_SUBSCRIPTION_ID, AZURE_VM_SSH_PUBLIC_KEY,
+# CLOUDFLARE_ZONE_ID, DEMO_HOST, DEMO_DOMAIN (read by --env-file, default .env).
+version: 1
+name: xops
+description: a service footprint on Azure (network, compute, storage, monitoring, Azure OpenAI) with its edge in Cloudflare, as data
+providers:
+  - azure::v26.07.00420
+  - cloudflare::v26.07.00424
+globals:
+  - name: subscription_id
+    description: azure subscription id
+    value: "{{ AZURE_SUBSCRIPTION_ID }}"
+  - name: location
+    description: region for every azure resource
+    value: eastus2
+  - name: name_suffix
+    description: first 8 chars of the subscription id, for globally unique names (storage account, openai subdomain)
+    value: '{{ AZURE_SUBSCRIPTION_ID | truncate(length=8, end="") }}'
+  - name: ssh_public_key
+    description: the vm admin's ssh public key (password auth is disabled)
+    value: "{{ AZURE_VM_SSH_PUBLIC_KEY }}"
+  - name: zone_id
+    description: cloudflare zone the A record lives in
+    value: "{{ CLOUDFLARE_ZONE_ID }}"
+  - name: host
+    value: "{{ DEMO_HOST }}"
+  - name: domain
+    value: "{{ DEMO_DOMAIN }}"
+  # global_tags are the desired state on every resource: identity (stack, env,
+  # service) plus the governance tags the agents check (owner, costCentre).
+  - name: global_tags
+    value:
+      provisioner: stackql
+      stackName: "{{ stack_name }}"
+      stackEnv: "{{ stack_env }}"
+      service: "{{ DEMO_HOST }}"
+      owner: platform-team
+      costCentre: demo
+resources:
+  - name: resource_group
+    description: everything in the stack lives here
+    props:
+      - name: resource_group_name
+        value: "{{ stack_name }}-{{ stack_env }}-rg"
+    exports:
+      - resource_group_name
+
+  - name: vnet
+    props:
+      - name: vnet_name
+        value: "{{ stack_name }}-{{ stack_env }}-vnet"
+      - name: vnet_cidr_block
+        values:
+          prd:
+            value: "10.0.0.0/16"
+          dev:
+            value: "10.2.0.0/16"
+    exports:
+      - vnet_name
+      - vnet_cidr_block
+
+  - name: subnet
+    props:
+      - name: subnet_name
+        value: "{{ stack_name }}-{{ stack_env }}-subnet-1"
+      - name: subnet_cidr
+        values:
+          prd:
+            value: "10.0.1.0/24"
+          dev:
+            value: "10.2.1.0/24"
+    exports:
+      - subnet_name
+      - subnet_id
+
+  - name: nsg
+    description: asserted on every build - 80 from anywhere, 22 from the vnet only, nothing else inbound
+    props:
+      - name: nsg_name
+        value: "{{ stack_name }}-{{ stack_env }}-nsg"
+      - name: security_rules
+        value:
+          - name: AllowHTTP
+            properties:
+              access: Allow
+              protocol: Tcp
+              direction: Inbound
+              priority: 100
+              sourceAddressPrefix: "*"
+              sourcePortRange: "*"
+              destinationAddressPrefix: "*"
+              destinationPortRange: "80"
+          - name: AllowSSHFromVnet
+            properties:
+              access: Allow
+              protocol: Tcp
+              direction: Inbound
+              priority: 200
+              sourceAddressPrefix: "{{ vnet_cidr_block }}"
+              sourcePortRange: "*"
+              destinationAddressPrefix: "*"
+              destinationPortRange: "22"
+    exports:
+      - nsg_name
+      - network_security_group_id
+
+  - name: public_ip
+    description: the address the edge points at (Standard sku, static)
+    props:
+      - name: public_ip_name
+        value: "{{ stack_name }}-{{ stack_env }}-pip"
+    exports:
+      - public_ip_name
+      - public_ip_id
+      - public_ip_address
+
+  - name: nic
+    props:
+      - name: nic_name
+        value: "{{ stack_name }}-{{ stack_env }}-nic"
+      - name: nic_ip_config
+        value:
+          name: ipconfig1
+          properties:
+            subnet:
+              id: "{{ subnet_id }}"
+            privateIPAllocationMethod: Dynamic
+            publicIPAddress:
+              id: "{{ public_ip_id }}"
+    exports:
+      - network_interface_id
+
+  - name: web_server
+    description: the service's one vm - ssh key auth only, os disk deleted with the vm
+    props:
+      - name: vm_name
+        value: "{{ stack_name }}-{{ stack_env }}-vm"
+      - name: vm_size
+        description: F-series v7 (AMD) - the B series is capacity restricted for this subscription in eastus2
+        values:
+          prd:
+            value: Standard_F2als_v7
+          dev:
+            value: Standard_F1als_v7
+      - name: storageProfile
+        value:
+          imageReference:
+            publisher: Canonical
+            offer: ubuntu-24_04-lts
+            sku: server
+            version: latest
+          osDisk:
+            name: "{{ stack_name }}-{{ stack_env }}-vm-osdisk"
+            createOption: FromImage
+            deleteOption: Delete
+            managedDisk:
+              storageAccountType: Standard_LRS
+            diskSizeGB: 30
+      - name: osProfile
+        value:
+          computerName: "{{ stack_name }}-{{ stack_env }}-vm"
+          adminUsername: azureuser
+          linuxConfiguration:
+            disablePasswordAuthentication: true
+            ssh:
+              publicKeys:
+                - path: /home/azureuser/.ssh/authorized_keys
+                  keyData: "{{ ssh_public_key }}"
+      - name: networkProfile
+        value:
+          networkInterfaces:
+            - id: "{{ network_interface_id }}"
+    exports:
+      - vm_name
+      - vm_id
+      - vm_resource_id
+
+  - name: web_server_ext
+    description: custom script extension - writes the page and a systemd unit that serves it on 80
+    props:
+      - name: vm_ext_name
+        value: "{{ stack_name }}-{{ stack_env }}-vm-customscript"
+      - name: web_port
+        value: 80
+      - name: index_html
+        value: |
+          <!doctype html>
+          <html><head><meta charset="utf-8"><title>{{ host }}.{{ domain }}</title>
+          <style>body{font-family:Segoe UI,sans-serif;max-width:40em;margin:4em auto;color:#222}code{background:#eee;padding:.1em .3em}</style>
+          </head><body>
+          <h1>{{ host }}.{{ domain }}</h1>
+          <p>Provisioned by <code>stackql-deploy build {{ stack_name }} {{ stack_env }}</code>.</p>
+          <p>Compute on Azure ({{ location }}), edge on Cloudflare, both planes as data.</p>
+          </body></html>
+      - name: systemd_unit
+        value: |
+          [Unit]
+          Description={{ stack_name }} demo web server
+          After=network.target
+          [Service]
+          WorkingDirectory=/var/www
+          ExecStart=/usr/bin/python3 -m http.server {{ web_port }}
+          Restart=always
+          [Install]
+          WantedBy=multi-user.target
+    exports:
+      - web_url
+
+  - name: storage_account
+    description: secure defaults asserted - no public blob access, TLS 1.2, https only (an update anchor patches drift back)
+    props:
+      - name: storage_account_name
+        value: "{{ stack_name }}{{ stack_env }}{{ name_suffix }}"
+      - name: storage_sku
+        values:
+          prd:
+            value: Standard_GRS
+          dev:
+            value: Standard_LRS
+    exports:
+      - storage_account_name
+      - blob_endpoint
+
+  - name: log_analytics
+    description: the monitoring workspace (PerGB2018, nothing ingested yet)
+    props:
+      - name: workspace_name
+        value: "{{ stack_name }}-{{ stack_env }}-law"
+      - name: retention_in_days
+        values:
+          prd:
+            value: 90
+          dev:
+            value: 30
+    exports:
+      - log_analytics_workspace_id
+      - log_analytics_customer_id
+
+  - name: orphan_disk
+    description: planted FinOps finding - a managed disk attached to nothing
+    props:
+      - name: disk_name
+        value: "{{ stack_name }}-{{ stack_env }}-orphan-disk"
+      - name: disk_size_gb
+        value: 4
+      - name: disk_tags
+        value:
+          purpose: finops-seed
+        merge: ['global_tags']
+    exports:
+      - orphan_disk_id
+
+  - name: orphan_public_ip
+    description: planted FinOps finding - a Standard public ip associated with nothing
+    props:
+      - name: orphan_pip_name
+        value: "{{ stack_name }}-{{ stack_env }}-orphan-pip"
+      - name: orphan_pip_tags
+        value:
+          purpose: finops-seed
+        merge: ['global_tags']
+    exports:
+      - orphan_public_ip_id
+
+  - name: openai_account
+    description: the agents' model lives here (Azure OpenAI, S0 - no fixed cost, pay per token)
+    props:
+      - name: openai_account_name
+        value: "{{ stack_name }}-{{ stack_env }}-openai-{{ name_suffix }}"
+    exports:
+      - openai_account_name
+      - openai_endpoint
+
+  - name: openai_deployment
+    description: gpt-5-mini on GlobalStandard, the deployment the agents call
+    props:
+      - name: deployment_name
+        value: gpt-5-mini
+      - name: model_name
+        value: gpt-5-mini
+      - name: model_version
+        value: "2025-08-07"
+      - name: sku_name
+        value: GlobalStandard
+      - name: capacity
+        description: thousands of tokens per minute (quota, not cost; the agents' discovery payloads are large)
+        value: 200
+    exports:
+      - openai_deployment_name
+
+  - name: dns_record
+    description: the edge - an A record on the demo zone pointing at the vm's public ip
+    props:
+      - name: record_name
+        value: "{{ host }}.{{ domain }}"
+      - name: record_ttl
+        value: 300
+    exports:
+      - dns_record_id
+      - record_name
+      - service_url
+
+  - name: conformance
+    description: one row summarising the footprint across both planes, exported as footprint_ok
+    type: query
+    exports:
+      - footprint_ok

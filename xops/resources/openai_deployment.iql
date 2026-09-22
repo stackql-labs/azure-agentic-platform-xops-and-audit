@@ -1,0 +1,51 @@
+/*+ exists */
+SELECT COUNT(*) AS count FROM azure.cognitive_services.deployments
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ openai_account_name }}'
+AND name = '{{ deployment_name }}'
+
+/*+ create */
+INSERT INTO azure.cognitive_services.deployments(
+  account_name,
+  deployment_name,
+  resource_group_name,
+  subscription_id,
+  properties,
+  sku
+)
+SELECT
+  '{{ openai_account_name }}',
+  '{{ deployment_name }}',
+  '{{ resource_group_name }}',
+  '{{ subscription_id }}',
+  '{"model": {"format": "OpenAI", "name": "{{ model_name }}", "version": "{{ model_version }}"}, "versionUpgradeOption": "OnceNewDefaultVersionAvailable"}',
+  '{"name": "{{ sku_name }}", "capacity": {{ capacity }}}'
+
+/*+ statecheck, retries=18, retry_delay=10 */
+SELECT COUNT(*) AS count FROM azure.cognitive_services.deployments
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ openai_account_name }}'
+AND name = '{{ deployment_name }}'
+AND provisioning_state = 'Succeeded'
+AND JSON_EXTRACT(model, '$.name') = '{{ model_name }}'
+AND JSON_EXTRACT(sku, '$.capacity') = {{ capacity }}
+
+/*+ update, retries=3, retry_delay=10 */
+UPDATE azure.cognitive_services.deployments
+SET sku = '{"name": "{{ sku_name }}", "capacity": {{ capacity }}}'
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ openai_account_name }}'
+AND deployment_name = '{{ deployment_name }}'
+
+/*+ exports */
+SELECT '{{ deployment_name }}' AS openai_deployment_name
+
+/*+ delete, retries=3, retry_delay=10 */
+DELETE FROM azure.cognitive_services.deployments
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ openai_account_name }}'
+AND deployment_name = '{{ deployment_name }}'

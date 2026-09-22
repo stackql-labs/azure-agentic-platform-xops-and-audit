@@ -1,0 +1,40 @@
+/*+ exists */
+SELECT COUNT(*) AS count FROM azure.network.virtual_networks
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ vnet_name }}'
+
+/*+ create */
+INSERT INTO azure.network.virtual_networks(
+   virtual_network_name,
+   resource_group_name,
+   subscription_id,
+   location,
+   properties,
+   tags
+)
+SELECT
+   '{{ vnet_name }}',
+   '{{ resource_group_name }}',
+   '{{ subscription_id }}',
+   '{{ location }}',
+   '{"addressSpace": {"addressPrefixes": ["{{ vnet_cidr_block }}"]}}',
+   '{{ global_tags }}'
+
+/*+ statecheck, retries=5, retry_delay=5 */
+SELECT COUNT(*) AS count FROM azure.network.virtual_networks
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ vnet_name }}'
+AND provisioning_state = 'Succeeded'
+AND JSON_EXTRACT(address_space, '$.addressPrefixes[0]') = '{{ vnet_cidr_block }}'
+
+/*+ exports */
+SELECT '{{ vnet_name }}' AS vnet_name,
+       '{{ vnet_cidr_block }}' AS vnet_cidr_block
+
+/*+ delete */
+DELETE FROM azure.network.virtual_networks
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND virtual_network_name = '{{ vnet_name }}'

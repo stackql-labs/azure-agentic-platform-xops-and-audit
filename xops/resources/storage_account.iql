@@ -1,0 +1,57 @@
+/*+ exists */
+SELECT COUNT(*) AS count FROM azure.storage.storage_accounts
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ storage_account_name }}'
+
+/*+ create */
+INSERT INTO azure.storage.storage_accounts(
+  account_name,
+  resource_group_name,
+  subscription_id,
+  kind,
+  location,
+  sku,
+  properties,
+  tags
+)
+SELECT
+  '{{ storage_account_name }}',
+  '{{ resource_group_name }}',
+  '{{ subscription_id }}',
+  'StorageV2',
+  '{{ location }}',
+  '{"name": "{{ storage_sku }}"}',
+  '{"accessTier": "Hot", "allowBlobPublicAccess": false, "minimumTlsVersion": "TLS1_2", "supportsHttpsTrafficOnly": true}',
+  '{{ global_tags }}'
+
+/*+ statecheck, retries=8, retry_delay=5 */
+SELECT COUNT(*) AS count FROM azure.storage.storage_accounts
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ storage_account_name }}'
+AND provisioning_state = 'Succeeded'
+AND allow_blob_public_access IN (0, '0', 'false')
+AND minimum_tls_version = 'TLS1_2'
+AND supports_https_traffic_only IN (1, '1', 'true')
+
+/*+ update */
+UPDATE azure.storage.storage_accounts
+SET properties = '{"allowBlobPublicAccess": false, "minimumTlsVersion": "TLS1_2", "supportsHttpsTrafficOnly": true}'
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ storage_account_name }}'
+
+/*+ exports */
+SELECT '{{ storage_account_name }}' AS storage_account_name,
+       JSON_EXTRACT(primary_endpoints, '$.blob') AS blob_endpoint
+FROM azure.storage.storage_accounts
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ storage_account_name }}'
+
+/*+ delete */
+DELETE FROM azure.storage.storage_accounts
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND account_name = '{{ storage_account_name }}'

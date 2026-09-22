@@ -1,0 +1,44 @@
+/*+ exists */
+SELECT COUNT(*) AS count FROM azure.log_analytics.workspaces
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ workspace_name }}'
+
+/*+ create */
+INSERT INTO azure.log_analytics.workspaces(
+  resource_group_name,
+  subscription_id,
+  workspace_name,
+  location,
+  properties,
+  tags
+)
+SELECT
+  '{{ resource_group_name }}',
+  '{{ subscription_id }}',
+  '{{ workspace_name }}',
+  '{{ location }}',
+  '{"sku": {"name": "PerGB2018"}, "retentionInDays": {{ retention_in_days }}, "features": {"enableLogAccessUsingOnlyResourcePermissions": true}}',
+  '{{ global_tags }}'
+
+/*+ statecheck, retries=10, retry_delay=6 */
+SELECT COUNT(*) AS count FROM azure.log_analytics.workspaces
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ workspace_name }}'
+AND provisioning_state = 'Succeeded'
+AND retention_in_days = {{ retention_in_days }}
+
+/*+ exports */
+SELECT id AS log_analytics_workspace_id,
+       customer_id AS log_analytics_customer_id
+FROM azure.log_analytics.workspaces
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ workspace_name }}'
+
+/*+ delete */
+DELETE FROM azure.log_analytics.workspaces
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND workspace_name = '{{ workspace_name }}'

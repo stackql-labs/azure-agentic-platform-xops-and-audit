@@ -1,0 +1,36 @@
+/*+ exports */
+SELECT SUM(ok) AS passed, COUNT(*) AS checks,
+       CASE WHEN SUM(ok) = COUNT(*) THEN 'true' ELSE 'false' END AS footprint_ok
+FROM (
+  SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END AS ok
+  FROM azure.network.security_rules
+  WHERE subscription_id = '{{ subscription_id }}'
+  AND resource_group_name = '{{ resource_group_name }}'
+  AND network_security_group_name = '{{ nsg_name }}'
+  AND access = 'Allow'
+  AND direction = 'Inbound'
+  AND destination_port_range = '22'
+  AND source_address_prefix IN ('*', '0.0.0.0/0', 'Internet')
+  UNION ALL
+  SELECT CASE WHEN COUNT(*) = 1 THEN 1 ELSE 0 END
+  FROM azure.storage.storage_accounts
+  WHERE subscription_id = '{{ subscription_id }}'
+  AND resource_group_name = '{{ resource_group_name }}'
+  AND name = '{{ storage_account_name }}'
+  AND allow_blob_public_access IN (0, '0', 'false')
+  AND minimum_tls_version = 'TLS1_2'
+  UNION ALL
+  SELECT CASE WHEN COUNT(*) = 1 THEN 1 ELSE 0 END
+  FROM azure.compute.virtual_machines
+  WHERE subscription_id = '{{ subscription_id }}'
+  AND resource_group_name = '{{ resource_group_name }}'
+  AND name = '{{ vm_name }}'
+  AND provisioning_state = 'Succeeded'
+  UNION ALL
+  SELECT CASE WHEN COUNT(*) = 1 THEN 1 ELSE 0 END
+  FROM cloudflare.dns.zones_dns_records
+  WHERE zone_id = '{{ zone_id }}'
+  AND name = '{{ record_name }}'
+  AND type = 'A'
+  AND content = '{{ public_ip_address }}'
+) checks

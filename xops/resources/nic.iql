@@ -1,0 +1,42 @@
+/*+ exists */
+SELECT COUNT(*) AS count FROM azure.network.network_interfaces
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ nic_name }}'
+
+/*+ create */
+INSERT INTO azure.network.network_interfaces(
+   network_interface_name,
+   resource_group_name,
+   subscription_id,
+   location,
+   properties,
+   tags
+)
+SELECT
+   '{{ nic_name }}',
+   '{{ resource_group_name }}',
+   '{{ subscription_id }}',
+   '{{ location }}',
+   '{"ipConfigurations": [ {{ nic_ip_config }} ], "networkSecurityGroup": {"id": "{{ network_security_group_id }}"}}',
+   '{{ global_tags }}'
+
+/*+ statecheck, retries=5, retry_delay=5 */
+SELECT COUNT(*) AS count FROM azure.network.network_interfaces
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ nic_name }}'
+AND provisioning_state = 'Succeeded'
+
+/*+ exports */
+SELECT id AS network_interface_id
+FROM azure.network.network_interfaces
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND name = '{{ nic_name }}'
+
+/*+ delete, retries=6, retry_delay=10 */
+DELETE FROM azure.network.network_interfaces
+WHERE subscription_id = '{{ subscription_id }}'
+AND resource_group_name = '{{ resource_group_name }}'
+AND network_interface_name = '{{ nic_name }}'

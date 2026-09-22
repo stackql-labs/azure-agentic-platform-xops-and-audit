@@ -1,0 +1,225 @@
+-- =============================================================================
+-- Demo 1: Azure and Cloudflare as data sources accessed via SQL (stackql shell)
+-- Two providers, two planes: azure (network, compute, storage, monitoring,
+-- cost, Azure OpenAI) and cloudflare (edge). Paste one statement at a time.
+-- Needs AZURE_* and CLOUDFLARE_* from .env exported before starting the shell:
+--   set -a; source .env; set +a; stackql shell
+-- The subscription id below is the demo subscription (stackql-subscription);
+-- the stack is xops-dev-rg in eastus2. Every query answers in about a second
+-- of API time.
+-- =============================================================================
+
+-- 1.1  providers are versioned documents pulled from the registry
+REGISTRY PULL azure;
+REGISTRY PULL cloudflare;
+SHOW PROVIDERS;
+
+-- 1.2  discovery: services -> resources -> methods -> fields
+--      (269 services in the azure provider: every route in the Azure REST API)
+SHOW SERVICES IN azure LIKE 'compute%';
+SHOW RESOURCES IN azure.network LIKE '%security%';
+SHOW EXTENDED METHODS IN azure.compute.virtual_machines;
+DESCRIBE EXTENDED azure.network.public_ip_addresses;
+
+-- =============================================================================
+-- INVENTORY (the resource group the stack built)
+-- =============================================================================
+
+-- 1.3  every resource in the resource group, rolled up by type
+--      (ORDER BY the expression, not the alias)
+SELECT type, COUNT(*) AS total
+FROM azure.resource.resources
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg'
+GROUP BY type
+ORDER BY COUNT(*) DESC;
+
+-- 1.4  tags as rows: json_each over the tags column (the filtered provider
+--      query goes in a CTE first; filter on provider columns there, not on
+--      the json_each alias); who owns the vm and who pays for it
+WITH live AS (
+  SELECT name, tags
+  FROM azure.resource.resources
+  WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+  AND resource_group_name = 'xops-dev-rg'
+  AND name = 'xops-dev-vm'
+)
+SELECT live.name, t.key AS tag, t.value AS value
+FROM live, json_each(live.tags) AS t
+ORDER BY tag;
+
+-- 1.5  the vm: size, state, os disk and age (dates with the SQLite built-ins)
+SELECT name,
+       JSON_EXTRACT(hardware_profile, '$.vmSize') AS size,
+       provisioning_state,
+       JSON_EXTRACT(storage_profile, '$.osDisk.managedDisk.storageAccountType') AS os_disk,
+       ROUND(julianday('now') - julianday(time_created), 2) AS age_days
+FROM azure.compute.virtual_machines
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg';
+
+-- 1.5b SRE: the vm's power state (the instance view is a get with $expand;
+--      the second status is the power state)
+SELECT name, provisioning_state,
+       JSON_EXTRACT(instance_view, '$.statuses[1].displayStatus') AS power_state
+FROM azure.compute.virtual_machines
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg'
+AND vm_name = 'xops-dev-vm'
+AND $expand = 'instanceView';
+
+-- =============================================================================
+-- AUDIT (CSPM): exposure and posture
+-- =============================================================================
+
+-- 1.6  which nsg rules let the internet in, on which ports
+--      (json_each over the security_rules array)
+WITH nsg AS (
+  SELECT name AS nsg, security_rules
+  FROM azure.network.network_security_groups
+  WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+  AND resource_group_name = 'xops-dev-rg'
+)
+SELECT nsg,
+       JSON_EXTRACT(r.value, '$.name') AS rule,
+       JSON_EXTRACT(r.value, '$.properties.priority') AS priority,
+       JSON_EXTRACT(r.value, '$.properties.destinationPortRange') AS port,
+       JSON_EXTRACT(r.value, '$.properties.sourceAddressPrefix') AS source
+FROM nsg, json_each(nsg.security_rules) r
+WHERE JSON_EXTRACT(r.value, '$.properties.direction') = 'Inbound'
+AND JSON_EXTRACT(r.value, '$.properties.access') = 'Allow'
+AND JSON_EXTRACT(r.value, '$.properties.sourceAddressPrefix') IN ('*', '0.0.0.0/0', 'Internet')
+ORDER BY priority;
+
+-- 1.7  storage posture: the three settings every CSPM check asks about
+--      (booleans arrive as true/false)
+SELECT name,
+       JSON_EXTRACT(sku, '$.name') AS sku,
+       allow_blob_public_access,
+       minimum_tls_version,
+       supports_https_traffic_only
+FROM azure.storage.storage_accounts
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg';
+
+-- =============================================================================
+-- FINOPS: waste, recommendations, spend
+-- =============================================================================
+
+-- 1.8  disks attached to nothing, with a window function: every disk and the
+--      GiB in its state alongside (Unattached = billing for nothing)
+SELECT name, disk_state, disk_size_gb,
+       JSON_EXTRACT(sku, '$.name') AS sku,
+       JSON_EXTRACT(tags, '$.purpose') AS purpose,
+       SUM(disk_size_gb) OVER (PARTITION BY disk_state) AS gib_in_state
+FROM azure.compute.disks
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg';
+
+-- 1.9  Standard public ips associated with nothing, still billing
+SELECT name, ip_address,
+       JSON_EXTRACT(sku, '$.name') AS sku,
+       CASE WHEN ip_configuration IS NULL THEN 'orphan' ELSE 'attached' END AS status
+FROM azure.network.public_ip_addresses
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg';
+
+-- 1.10 Azure Advisor: what Microsoft recommends for the subscription
+SELECT category, impact,
+       JSON_EXTRACT(short_description, '$.problem') AS problem,
+       impacted_field
+FROM azure.advisor.recommendations
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b';
+
+-- 1.11 spend: month-to-date actual cost by resource group. Cost Management's
+--      query is a POST, so it is an EXEC with the dataset as JSON (Azure rate
+--      limits this API hard; run it once)
+EXEC azure.cost_management.query.usage
+  @scope = '/subscriptions/d0a7d0c1-76bf-404f-bc48-ce42346fd01b',
+  @type = 'ActualCost',
+  @timeframe = 'MonthToDate',
+  @dataset = '{"granularity": "None", "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}}, "grouping": [{"type": "Dimension", "name": "ResourceGroupName"}]}';
+
+-- 1.12 the model the agents run on: the Azure OpenAI deployment the stack made
+SELECT name,
+       JSON_EXTRACT(model, '$.name') AS model,
+       JSON_EXTRACT(model, '$.version') AS version,
+       JSON_EXTRACT(sku, '$.name') AS sku,
+       JSON_EXTRACT(sku, '$.capacity') AS capacity_ktpm,
+       provisioning_state
+FROM azure.cognitive_services.deployments
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg'
+AND account_name = 'xops-dev-openai-d0a7d0c1';
+
+-- =============================================================================
+-- THE EDGE (cloudflare), and both planes together
+-- =============================================================================
+
+-- 1.13 the zone's records by type (JOIN zone -> records, GROUP_CONCAT)
+SELECT r.type, COUNT(*) AS records, GROUP_CONCAT(r.name, ', ') AS names
+FROM cloudflare.zones.zones z
+JOIN cloudflare.dns.zones_dns_records r ON r.zone_id = z.id
+WHERE z.name = 'stackql.xyz'
+GROUP BY r.type;
+
+-- 1.14 two planes in one result set: compute and edge as one inventory
+SELECT 'azure' AS plane, name, provisioning_state AS state
+FROM azure.compute.virtual_machines
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg'
+UNION ALL
+SELECT 'cloudflare', r.name, r.type
+FROM cloudflare.zones.zones z
+JOIN cloudflare.dns.zones_dns_records r ON r.zone_id = z.id
+WHERE z.name = 'stackql.xyz';
+
+-- 1.15 two planes in one statement (a cross-provider JOIN): which Azure public
+--      ip does each A record in the zone point at, and what is that ip attached
+--      to? The zone is looked up by name and joined to its records in a CTE,
+--      then the CTE is joined to Azure. Needs both credentials exported. The
+--      bridge into demos 2 and 3.
+WITH edge AS (
+  SELECT z.id AS zone_id, r.name AS record, r.content AS ip
+  FROM cloudflare.zones.zones z
+  LEFT JOIN cloudflare.dns.zones_dns_records r ON r.zone_id = z.id
+  WHERE z.name = 'stackql.xyz'
+    AND r.type = 'A'
+)
+SELECT e.record, e.ip, p.name AS public_ip,
+       JSON_EXTRACT(p.ip_configuration, '$.id') AS attached_to
+FROM edge e
+JOIN azure.network.public_ip_addresses p ON p.ip_address = e.ip
+WHERE p.subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND p.resource_group_name = 'xops-dev-rg';
+
+-- =============================================================================
+-- Mutations (same verbs; run only if you want to show a write in the shell,
+-- otherwise these are what stackql-deploy and the agents run for you)
+-- =============================================================================
+
+-- lifecycle is an EXEC: deallocate the vm out of hours, start it again
+EXEC azure.compute.virtual_machines.deallocate
+  @vm_name = 'xops-dev-vm',
+  @resource_group_name = 'xops-dev-rg',
+  @subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b';
+
+EXEC azure.compute.virtual_machines.start
+  @vm_name = 'xops-dev-vm',
+  @resource_group_name = 'xops-dev-rg',
+  @subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b';
+
+-- a setting is an UPDATE (PATCH), exactly as the API models it; this is the
+-- drift xops/drift.sh plants, and stackql-deploy build puts back
+UPDATE azure.storage.storage_accounts
+SET properties = '{"allowBlobPublicAccess": true}'
+WHERE subscription_id = 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b'
+AND resource_group_name = 'xops-dev-rg'
+AND account_name = 'xopsdevd0a7d0c1';
+
+-- a subresource is an INSERT: an extra nsg rule (stackql-deploy build removes it)
+INSERT INTO azure.network.security_rules(
+  network_security_group_name, resource_group_name, security_rule_name, subscription_id, properties
+)
+SELECT 'xops-dev-nsg', 'xops-dev-rg', 'AllowSSHFromInternet', 'd0a7d0c1-76bf-404f-bc48-ce42346fd01b',
+       '{"access": "Allow", "protocol": "Tcp", "direction": "Inbound", "priority": 150, "sourceAddressPrefix": "*", "sourcePortRange": "*", "destinationAddressPrefix": "*", "destinationPortRange": "22"}';

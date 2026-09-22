@@ -1,0 +1,16 @@
+-- two planes in one statement: which Azure public ip does each A record in the
+-- zone point at, and what is that ip attached to? The zone is looked up by name
+-- and joined to its records in a CTE, then the CTE is joined to Azure.
+WITH edge AS (
+  SELECT z.id AS zone_id, r.name AS record, r.content AS ip
+  FROM cloudflare.zones.zones z
+  LEFT JOIN cloudflare.dns.zones_dns_records r ON r.zone_id = z.id
+  WHERE z.name = '{{ .zone }}'
+    AND r.type = 'A'
+)
+SELECT e.record, e.ip, p.name AS public_ip,
+       JSON_EXTRACT(p.ip_configuration, '$.id') AS attached_to
+FROM edge e
+JOIN azure.network.public_ip_addresses p ON p.ip_address = e.ip
+WHERE p.subscription_id = '{{ .subscription_id }}'
+AND p.resource_group_name = '{{ .resource_group }}';

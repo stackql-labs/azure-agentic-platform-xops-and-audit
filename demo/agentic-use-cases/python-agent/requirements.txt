@@ -1,0 +1,4 @@
+agent-framework-core
+agent-framework-openai
+mcp<2
+stackql-mcp-server
