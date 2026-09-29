@@ -101,6 +101,7 @@ Finish with a plain-text report: PASS or ATTENTION per check, with one line
 of evidence each, then one line on total tool calls made.
 """;
 
+var toolCalls = 0;
 AIAgent agent = new AzureOpenAIClient(new Uri(endpoint), new ApiKeyCredential(apiKey))
     .GetChatClient(deployment)
     .AsAIAgent(new ChatClientAgentOptions
@@ -112,28 +113,30 @@ AIAgent agent = new AzureOpenAIClient(new Uri(endpoint), new ApiKeyCredential(ap
             Tools = [.. tools],
             Reasoning = new ReasoningOptions { Effort = ReasoningEffort.Low },
         },
-    });
+    })
+    .AsBuilder()
+    .Use(PrintToolCall)
+    .Build();
 
-var toolCalls = 0;
+// Not streamed: the chat completions stream from Azure OpenAI carries content
+// filter annotation chunks with no delta, which Microsoft.Extensions.AI.OpenAI
+// 10.10 fails to parse. The middleware prints each tool call as it happens.
 Console.WriteLine("=== sweep ===\n");
-await foreach (var update in agent.RunStreamingAsync(prompt))
+var response = await agent.RunAsync(prompt);
+Console.WriteLine($"\n{response.Text}");
+Console.WriteLine($"\n=== {toolCalls} tool calls, all SELECTs, all logged by the server ===");
+
+async ValueTask<object?> PrintToolCall(
+    AIAgent agent,
+    FunctionInvocationContext context,
+    Func<FunctionInvocationContext, CancellationToken, ValueTask<object?>> next,
+    CancellationToken cancellationToken)
 {
-    foreach (var content in update.Contents)
-    {
-        switch (content)
-        {
-            case FunctionCallContent call:
-                toolCalls++;
-                var callArgs = call.Arguments is null ? "" : JsonSerializer.Serialize(call.Arguments);
-                Console.WriteLine($"  -> {call.Name} {Truncate(callArgs, 160)}");
-                break;
-            case TextContent text:
-                Console.Write(text.Text);
-                break;
-        }
-    }
+    toolCalls++;
+    var callArgs = JsonSerializer.Serialize(context.Arguments);
+    Console.WriteLine($"  -> {context.Function.Name} {Truncate(callArgs, 160)}");
+    return await next(context, cancellationToken);
 }
-Console.WriteLine($"\n\n=== {toolCalls} tool calls, all SELECTs, all logged by the server ===");
 
 static string Require(string name) =>
     Environment.GetEnvironmentVariable(name)

@@ -41,7 +41,9 @@ stackql's app root (`--approot`, where `REGISTRY PULL` puts providers) defaults 
 - Reasoning effort is `low` in both agents (`default_options={"reasoning": {"effort": "low"}}` in Python, `ChatOptions.Reasoning` in .NET); gpt-5-mini at the default effort is slow for a live demo.
 - Model ids and endpoints come from `.env` only (`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `AZURE_OPENAI_API_KEY`); never hardcode them.
 - Both programmatic agents launch the server in `read_only` mode in code; the interactive hosts use `safe` mode from the MCP configs. Keep it that way: agency is a property of the process, not the prompt.
-- Python: `agent-framework-core` + `agent-framework-openai` (the `agent-framework` meta package fails to install on Windows without long path support). .NET: `Microsoft.Agents.AI.OpenAI` + `Azure.AI.OpenAI` + `ModelContextProtocol`; the agent factory is `ChatClient.AsAIAgent(...)`.
+- Python: `agent-framework-core` + `agent-framework-openai` (the `agent-framework` meta package fails to install on Windows without long path support). .NET: `Microsoft.Agents.AI.OpenAI` + `Azure.AI.OpenAI` + `StackQL.Mcp.AgentFramework` (which brings `StackQL.Mcp` and the MCP SDK); the agent factory is `ChatClient.AsAIAgent(...)`.
+- The .NET agent takes the server binary from the `StackQL.Mcp` NuGet package (`StackqlServer.ResolveCommandAsync`: sha256 verified, cached under `~/.stackql/mcp-server-bin/<version>/`), not from PATH. The package version is the stackql version it runs. It passes its own launch command through `WithCommand` because the builder's default `--mcp.config` sets `audit.disabled`, which would drop the JSONL log the demo shows.
+- The .NET agent is not streamed (`RunAsync`, with a function middleware printing each tool call): the Azure OpenAI chat completions stream carries content filter annotation chunks with no `delta`, and `Microsoft.Extensions.AI.OpenAI` 10.10.0 and 10.10.1 throw on them (`requires an element of type 'Object', but the target element has type 'Null'`). Bug to raise upstream (dotnet/extensions); retest `RunStreamingAsync` when a fix ships.
 
 ## Copy and narrative
 

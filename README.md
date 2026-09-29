@@ -91,7 +91,7 @@ The demo beat: the stack is pre-warmed, so `build` walks 16 resources in about a
 
 - [copilot-prompts.md](demo/agentic-use-cases/copilot-prompts.md) - prompts for GitHub Copilot in VS Code (agent mode) or the Copilot CLI over the `stackql` MCP server in `safe` mode: inventory, exposure, the two-plane join, FinOps waste, Advisor, then a gated write (tag the orphan disk, deallocate the vm) approved on screen
 - [python-agent](demo/agentic-use-cases/python-agent/) - FinOps analyst: Microsoft Agent Framework (Python) + Azure OpenAI + [stackql-mcp-server](https://pypi.org/project/stackql-mcp-server/) (`read_only`)
-- [dotnet-agent](demo/agentic-use-cases/dotnet-agent/) - SRE assurance: Microsoft Agent Framework (.NET) + Azure OpenAI + `stackql mcp` (`read_only`)
+- [dotnet-agent](demo/agentic-use-cases/dotnet-agent/) - SRE assurance: Microsoft Agent Framework (.NET) + Azure OpenAI + [StackQL.Mcp](https://www.nuget.org/packages/StackQL.Mcp) (`read_only`)
 
 Both agents run from the repo root and need the `AZURE_*` credentials and the `AZURE_OPENAI_*` variables from `.env` in the process environment. Their model is the deployment the stack created; `scripts/openai-env.sh` writes its endpoint and key into `.env`.
 
