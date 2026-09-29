@@ -15,9 +15,10 @@ using System.Text.Json;
 using Azure.AI.OpenAI;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
-using ModelContextProtocol.Client;
 using OpenAI;
 using OpenAI.Chat;
+using StackQL.Mcp;
+using StackQL.Mcp.AgentFramework;
 
 var endpoint = Require("AZURE_OPENAI_ENDPOINT");
 var apiKey = Require("AZURE_OPENAI_API_KEY");
@@ -32,22 +33,26 @@ var resourceGroup = $"xops-{stackEnv}-rg";
 // The stackql app root (providers pulled with REGISTRY PULL) lives at the repo
 // root, whatever directory the agent is launched from.
 var repoRoot = FindRepoRoot();
+var approot = Path.Combine(repoRoot, ".stackql");
 
-var transport = new StdioClientTransport(new StdioClientTransportOptions
-{
-    Name = "stackql",
-    Command = "stackql",
-    Arguments =
+// The server binary comes with the StackQL.Mcp NuGet package: pinned to the
+// package version, sha256 verified and cached under ~/.stackql/mcp-server-bin,
+// so nothing has to be on the PATH. The launch command is spelled out because
+// the package's default config turns the server's audit log off.
+var stackql = (await StackqlServer.ResolveCommandAsync(StackqlMode.ReadOnly, approot))[0];
+
+await using var server = await StackqlMcp.CreateBuilder()
+    .WithCommand(
     [
+        stackql,
         "mcp",
         "--mcp.server.type=stdio",
-        "--approot", Path.Combine(repoRoot, ".stackql"),
+        "--approot", approot,
         "--mcp.config", "{\"server\": {\"transport\": \"stdio\", \"mode\": \"read_only\"}}",
-    ],
-});
+    ])
+    .StartAsync();
 
-await using var mcp = await McpClient.CreateAsync(transport);
-var tools = await mcp.ListToolsAsync();
+var tools = await server.AsAgentToolsAsync();
 Console.WriteLine($"connected: {tools.Count} stackql tools (read_only)\n");
 
 var instructions = $"""
